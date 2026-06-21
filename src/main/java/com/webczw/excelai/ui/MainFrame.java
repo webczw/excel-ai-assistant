@@ -22,90 +22,156 @@ public class MainFrame extends JFrame {
     private final DataService dataService = new DataService();
     private final DefaultTableModel tableModel = new DefaultTableModel();
     private final JTextArea questionInput = new JTextArea(3, 20);
-    private List<Map<String, Object>> lastResult;
     private String currentTableName;
+
+    // 分页变量（AI查询也共用）
+    private int currentPage = 1;
+    private int pageSize = 50;
+    private long totalCount = 0;
+
+    // 标记是否是AI查询结果
+    private boolean isAiQueryResult = false;
+    private List<Map<String, Object>> aiFullResult = new ArrayList<>();
 
     private final JList<String> tableList = new JList<>();
     private DefaultListModel<String> listModel;
     private final JTable dataTable;
 
+    // 分页组件
+    private JLabel pageTipLabel;
+    private JComboBox<Integer> pageSizeBox;
+    private JTextField pageJumpField;
+
     public MainFrame() {
-        setTitle("Excel AI 数据助手（企业优化版）");
+        setTitle("Excel AI 数据助手（完整版·全功能分页）");
         setSize(1300, 800);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout(10, 10));
 
-        // 数据表格【设置为只读，不可编辑】
+        // 表格只读
         dataTable = new JTable(tableModel) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return false; // 🔥 关键：全部只读
+                return false;
             }
         };
         dataTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
 
-        // ======================
-        // 顶部按钮（已删除“删除表”）
-        // ======================
+        // 顶部按钮
         JPanel topPanel = new JPanel();
         JButton importBtn = new JButton("导入Excel");
         JButton addBtn = new JButton("新增数据");
         JButton batchDeleteBtn = new JButton("批量删除选中行");
         JButton exportBtn = new JButton("导出Excel");
-
         topPanel.add(importBtn);
         topPanel.add(addBtn);
         topPanel.add(batchDeleteBtn);
         topPanel.add(exportBtn);
         add(topPanel, BorderLayout.NORTH);
 
-        // ======================
-        // 底部：AI查询框 + 查询按钮（右侧）
-        // ======================
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-        questionInput.setBorder(BorderFactory.createTitledBorder("AI查询描述"));
-        bottomPanel.add(questionInput, BorderLayout.CENTER);
-
-        JButton queryBtn = new JButton("执行AI查询");
-        bottomPanel.add(queryBtn, BorderLayout.EAST);
-        add(bottomPanel, BorderLayout.SOUTH);
-
-        // ======================
-        // 左侧表列表 + 右键删除菜单
-        // ======================
+        // 左侧表列表
         initTableList();
         initRightClickMenu();
-
-        // ======================
-        // 主布局
-        // ======================
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 new JScrollPane(tableList), new JScrollPane(dataTable));
         splitPane.setDividerLocation(300);
         add(splitPane, BorderLayout.CENTER);
 
-        // ======================
+        // 底部：AI查询 + 分页
+        // JPanel bottomAllPanel = new JPanel(new GridLayout(2, 1, 0, 5));
+        JPanel bottomAllPanel = new JPanel();
+        bottomAllPanel.setLayout(new BoxLayout(bottomAllPanel, BoxLayout.Y_AXIS));
+// 两行之间极小间距
+        bottomAllPanel.add(Box.createVerticalStrut(1));
+
+        // AI查询
+        JPanel aiPanel = new JPanel(new BorderLayout(5, 5));
+        questionInput.setBorder(BorderFactory.createTitledBorder("AI查询描述"));
+        aiPanel.add(questionInput, BorderLayout.CENTER);
+        JButton queryBtn = new JButton("执行AI查询");
+        aiPanel.add(queryBtn, BorderLayout.EAST);
+        bottomAllPanel.add(aiPanel);
+
+        // 分页栏
+        JPanel pagePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        pageTipLabel = new JLabel("暂无数据");
+        pagePanel.add(pageTipLabel);
+
+        pagePanel.add(new JLabel("每页条数："));
+        pageSizeBox = new JComboBox<>(new Integer[]{10, 20, 50, 100, 200});
+        pageSizeBox.setSelectedItem(pageSize);
+        pagePanel.add(pageSizeBox);
+
+        JButton prevBtn = new JButton("上一页");
+        JButton nextBtn = new JButton("下一页");
+        pagePanel.add(prevBtn);
+        pagePanel.add(nextBtn);
+
+        pagePanel.add(new JLabel("跳至："));
+        pageJumpField = new JTextField(3);
+        pagePanel.add(pageJumpField);
+        JButton jumpBtn = new JButton("跳转");
+        pagePanel.add(jumpBtn);
+
+        bottomAllPanel.add(pagePanel);
+        add(bottomAllPanel, BorderLayout.SOUTH);
+
         // 事件绑定
-        // ======================
         importBtn.addActionListener(e -> importExcel());
         addBtn.addActionListener(e -> addData());
         batchDeleteBtn.addActionListener(e -> batchDeleteData());
         exportBtn.addActionListener(e -> exportData());
         queryBtn.addActionListener(e -> aiQuery());
 
-        // 点击左侧表切换
+        // 分页事件
+        pageSizeBox.addActionListener(e -> {
+            pageSize = (Integer) pageSizeBox.getSelectedItem();
+            currentPage = 1;
+            refreshCurrentPageData();
+        });
+        prevBtn.addActionListener(e -> {
+            if (currentPage > 1) {
+                currentPage--;
+                refreshCurrentPageData();
+            }
+        });
+        nextBtn.addActionListener(e -> {
+            long maxPage = getMaxPage();
+            if (currentPage < maxPage) {
+                currentPage++;
+                refreshCurrentPageData();
+            }
+        });
+        jumpBtn.addActionListener(e -> {
+            try {
+                int target = Integer.parseInt(pageJumpField.getText().trim());
+                long maxPage = getMaxPage();
+                if (target >= 1 && target <= maxPage) {
+                    currentPage = target;
+                    refreshCurrentPageData();
+                } else {
+                    JOptionPane.showMessageDialog(this, "页码超出范围");
+                }
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "请输入合法数字");
+            }
+        });
+
+        // 切换表
         tableList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
                 String t = tableList.getSelectedValue();
                 if (t != null) {
+                    isAiQueryResult = false;
                     currentTableName = t;
+                    currentPage = 1;
                     loadTableData(t);
                 }
             }
         });
 
-        // 🔥 双击表格行 → 打开修改弹窗
+        // 双击修改
         dataTable.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -118,31 +184,35 @@ public class MainFrame extends JFrame {
         refreshTableList();
     }
 
-    // ======================
-    // 初始化左侧表列表
-    // ======================
+    private long getMaxPage() {
+        if (totalCount == 0) return 1;
+        return totalCount % pageSize == 0 ? totalCount / pageSize : totalCount / pageSize + 1;
+    }
+
+    private void refreshCurrentPageData() {
+        if (isAiQueryResult) {
+            showAiPageData();
+        } else {
+            loadTableData(currentTableName);
+        }
+    }
+
     private void initTableList() {
         listModel = new DefaultListModel<>();
         tableList.setModel(listModel);
         tableList.setBorder(BorderFactory.createTitledBorder("数据表列表（右键删除）"));
     }
 
-    // ======================
-    // 🔥 左侧列表右键菜单：删除表
-    // ======================
     private void initRightClickMenu() {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem deleteItem = new JMenuItem("删除当前表");
         menu.add(deleteItem);
-
         deleteItem.addActionListener(e -> {
             String table = tableList.getSelectedValue();
             if (table == null) return;
-
             int confirm = JOptionPane.showConfirmDialog(this,
-                    "确定删除表：" + table + "？\n数据将永久丢失！",
+                    "确定删除表：" + table + "？数据将永久丢失！",
                     "删除确认", JOptionPane.YES_NO_OPTION);
-
             if (confirm == JOptionPane.YES_OPTION) {
                 new Thread(() -> {
                     TableMappingUtil.dropTable(table);
@@ -151,45 +221,97 @@ public class MainFrame extends JFrame {
                         tableModel.setRowCount(0);
                         tableModel.setColumnCount(0);
                         currentTableName = null;
+                        pageTipLabel.setText("暂无数据");
                     });
                 }).start();
             }
         });
-
-        // 绑定右键
         tableList.setComponentPopupMenu(menu);
     }
 
-    // ======================
-    // 刷新左侧表列表
-    // ======================
     private void refreshTableList() {
         listModel.clear();
         TableMappingUtil.getAllTables().forEach(m -> listModel.addElement(m.get("table_name").toString()));
     }
 
-    // ======================
-    // 加载表数据
-    // ======================
+    // 加载真实表分页数据
     private void loadTableData(String table) {
+        if (table == null) return;
         new Thread(() -> {
-            List<Map<String, Object>> list = dataService.query("SELECT * FROM " + table);
-            lastResult = list;
-            SwingUtilities.invokeLater(() -> {
-                tableModel.setRowCount(0);
-                tableModel.setColumnCount(0);
-                if (!list.isEmpty()) {
-                    Map<String, Object> first = list.get(0);
-                    first.keySet().forEach(tableModel::addColumn);
-                    list.forEach(row -> tableModel.addRow(row.values().toArray()));
-                }
-            });
+            try {
+                List<Map<String, Object>> countRes = dataService.query("SELECT COUNT(*) cnt FROM " + table);
+                totalCount = Long.parseLong(countRes.get(0).get("cnt").toString());
+
+                long offset = (currentPage - 1L) * pageSize;
+                String pageSql = "SELECT * FROM " + table + " LIMIT " + offset + "," + pageSize;
+                List<Map<String, Object>> list = dataService.query(pageSql);
+
+                SwingUtilities.invokeLater(() -> {
+                    renderTable(list);
+                    long maxPage = getMaxPage();
+                    pageTipLabel.setText(String.format("总条数：%d  总页数：%d  当前第%d页", totalCount, maxPage, currentPage));
+                    pageJumpField.setText(String.valueOf(currentPage));
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }).start();
     }
 
-    // ======================
-    // 导入Excel
-    // ======================
+    // AI查询（支持分页）
+    private void aiQuery() {
+        if (currentTableName == null) {
+            JOptionPane.showMessageDialog(this, "请先选择表");
+            return;
+        }
+        String q = questionInput.getText().trim();
+        if (q.isBlank()) return;
+
+        new Thread(() -> {
+            try {
+                List<String> fields = dataService.query("SELECT * FROM " + currentTableName + " LIMIT 1")
+                        .stream().findFirst().map(Map::keySet).orElse(Set.of()).stream().toList();
+                String sql = aiService.generateSQL(currentTableName, fields, q);
+                List<Map<String, Object>> fullResult = dataService.query(sql);
+
+                isAiQueryResult = true;
+                aiFullResult = fullResult;
+                totalCount = fullResult.size();
+                currentPage = 1;
+
+                SwingUtilities.invokeLater(() -> {
+                    JOptionPane.showMessageDialog(this, "生成SQL：\n" + sql);
+                    showAiPageData();
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
+    // 显示AI分页数据
+    private void showAiPageData() {
+        int fromIndex = (currentPage - 1) * pageSize;
+        int toIndex = Math.min(fromIndex + pageSize, aiFullResult.size());
+        List<Map<String, Object>> pageData = aiFullResult.subList(fromIndex, toIndex);
+
+        renderTable(pageData);
+        long maxPage = getMaxPage();
+        pageTipLabel.setText(String.format("AI结果：%d条  总页数：%d  当前第%d页", totalCount, maxPage, currentPage));
+        pageJumpField.setText(String.valueOf(currentPage));
+    }
+
+    // 统一渲染表格
+    private void renderTable(List<Map<String, Object>> list) {
+        tableModel.setRowCount(0);
+        tableModel.setColumnCount(0);
+        if (list.isEmpty()) return;
+
+        Map<String, Object> first = list.get(0);
+        first.keySet().forEach(tableModel::addColumn);
+        list.forEach(row -> tableModel.addRow(row.values().toArray()));
+    }
+
     private void importExcel() {
         JFileChooser chooser = new JFileChooser();
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
@@ -217,12 +339,9 @@ public class MainFrame extends JFrame {
         }
     }
 
-    // ======================
-    // 新增数据
-    // ======================
     private void addData() {
-        if (currentTableName == null) {
-            JOptionPane.showMessageDialog(this, "请先选择表");
+        if (currentTableName == null || isAiQueryResult) {
+            JOptionPane.showMessageDialog(this, "请选择真实数据表才能新增");
             return;
         }
         if (tableModel.getColumnCount() == 0) {
@@ -232,14 +351,12 @@ public class MainFrame extends JFrame {
 
         Map<String, JTextField> fieldMap = new HashMap<>();
         JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
-
         for (int i = 0; i < tableModel.getColumnCount(); i++) {
             String col = tableModel.getColumnName(i);
             if (col.equalsIgnoreCase("id")) continue;
             panel.add(new JLabel(col));
-            JTextField tf = new JTextField();
-            fieldMap.put(col, tf);
-            panel.add(tf);
+            fieldMap.put(col, new JTextField());
+            panel.add(fieldMap.get(col));
         }
 
         int r = JOptionPane.showConfirmDialog(this, panel, "新增数据", JOptionPane.OK_CANCEL_OPTION);
@@ -257,7 +374,8 @@ public class MainFrame extends JFrame {
                     vals.setLength(vals.length() - 1);
                     String sql = "INSERT INTO " + currentTableName + " (" + cols + ") VALUES (" + vals + ")";
                     dataService.update(sql);
-                    SwingUtilities.invokeLater(() -> loadTableData(currentTableName));
+                    currentPage = 1;
+                    loadTableData(currentTableName);
                 } catch (Exception e) {
                     JOptionPane.showMessageDialog(this, "新增失败");
                 }
@@ -265,10 +383,11 @@ public class MainFrame extends JFrame {
         }
     }
 
-    // ======================
-    // 修改数据（已修复）
-    // ======================
     private void updateData() {
+        if (isAiQueryResult) {
+            JOptionPane.showMessageDialog(this, "AI查询结果无法直接修改，请切换原表进行修改");
+            return;
+        }
         if (currentTableName == null) {
             JOptionPane.showMessageDialog(this, "请先选择表");
             return;
@@ -279,30 +398,23 @@ public class MainFrame extends JFrame {
             return;
         }
 
-        int idColumnIndex = -1;
-        String idColumnName = null;
+        int idIndex = -1;
+        String idName = null;
         for (int i = 0; i < tableModel.getColumnCount(); i++) {
             if (tableModel.getColumnName(i).equalsIgnoreCase("id")) {
-                idColumnIndex = i;
-                idColumnName = tableModel.getColumnName(i);
+                idIndex = i;
+                idName = tableModel.getColumnName(i);
                 break;
             }
         }
-
-        if (idColumnIndex == -1 || idColumnName == null) {
-            JOptionPane.showMessageDialog(this, "表中未找到主键ID，无法修改");
+        if (idIndex == -1) {
+            JOptionPane.showMessageDialog(this, "未找到主键ID");
             return;
         }
-
-        Object idValue = tableModel.getValueAt(row, idColumnIndex);
-        if (idValue == null) {
-            JOptionPane.showMessageDialog(this, "ID不能为空");
-            return;
-        }
+        Object idVal = tableModel.getValueAt(row, idIndex);
 
         Map<String, JTextField> fieldMap = new HashMap<>();
         JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
-
         for (int i = 0; i < tableModel.getColumnCount(); i++) {
             String col = tableModel.getColumnName(i);
             if (col.equalsIgnoreCase("id")) continue;
@@ -315,7 +427,7 @@ public class MainFrame extends JFrame {
 
         int r = JOptionPane.showConfirmDialog(this, panel, "修改数据", JOptionPane.OK_CANCEL_OPTION);
         if (r == JOptionPane.OK_OPTION) {
-            String finalIdColumnName = idColumnName;
+            String finalIdName = idName;
             new Thread(() -> {
                 try {
                     StringBuilder set = new StringBuilder();
@@ -327,112 +439,80 @@ public class MainFrame extends JFrame {
                             set.append("`").append(col).append("`=NULL,");
                         }
                     }
-                    if (!set.isEmpty()) {
-                        set.setLength(set.length() - 1);
-                    }
-
-                    String sql = "UPDATE " + currentTableName
-                            + " SET " + set
-                            + " WHERE `" + finalIdColumnName + "` = '" + idValue + "'";
-
+                    if (!set.isEmpty()) set.setLength(set.length() - 1);
+                    String sql = "UPDATE " + currentTableName + " SET " + set + " WHERE `" + finalIdName + "`='" + idVal + "'";
                     dataService.update(sql);
-                    SwingUtilities.invokeLater(() -> loadTableData(currentTableName));
+                    refreshCurrentPageData();
                 } catch (Exception e) {
-                    e.printStackTrace();
                     JOptionPane.showMessageDialog(this, "修改失败");
                 }
             }).start();
         }
     }
 
-    // ======================
-    // 批量删除（已修复）
-    // ======================
     private void batchDeleteData() {
+        if (isAiQueryResult) {
+            JOptionPane.showMessageDialog(this, "AI结果无法删除，请切换原表");
+            return;
+        }
         if (currentTableName == null) {
             JOptionPane.showMessageDialog(this, "请选表");
             return;
         }
         int[] rows = dataTable.getSelectedRows();
         if (rows == null || rows.length == 0) {
-            JOptionPane.showMessageDialog(this, "请选择要删除的行");
+            JOptionPane.showMessageDialog(this, "请选择行");
             return;
         }
-
-        int confirm = JOptionPane.showConfirmDialog(this,
-                "确定要删除选中的 " + rows.length + " 行数据吗？\n此操作不可恢复！",
-                "批量删除确认", JOptionPane.YES_NO_OPTION);
+        int confirm = JOptionPane.showConfirmDialog(this, "确定删除选中 " + rows.length + " 行？");
         if (confirm != JOptionPane.YES_OPTION) return;
 
         new Thread(() -> {
             try {
-                int idColumnIndex = -1;
+                int idIndex = -1;
                 for (int i = 0; i < tableModel.getColumnCount(); i++) {
                     if (tableModel.getColumnName(i).equalsIgnoreCase("id")) {
-                        idColumnIndex = i;
+                        idIndex = i;
                         break;
                     }
                 }
-                if (idColumnIndex == -1) {
-                    JOptionPane.showMessageDialog(this, "未找到主键ID，无法删除");
+                if (idIndex == -1) {
+                    JOptionPane.showMessageDialog(this, "未找到主键");
                     return;
                 }
-
                 for (int r : rows) {
-                    Object idVal = tableModel.getValueAt(r, idColumnIndex);
-                    String sql = "DELETE FROM " + currentTableName + " WHERE `id`='" + idVal + "'";
-                    dataService.update(sql);
+                    Object val = tableModel.getValueAt(r, idIndex);
+                    dataService.update("DELETE FROM " + currentTableName + " WHERE `id`='" + val + "'");
                 }
-
-                SwingUtilities.invokeLater(() -> {
-                    loadTableData(currentTableName);
-                    JOptionPane.showMessageDialog(this, "批量删除完成");
-                });
+                currentPage = 1;
+                refreshCurrentPageData();
+                JOptionPane.showMessageDialog(this, "删除成功");
             } catch (Exception e) {
-                e.printStackTrace();
                 JOptionPane.showMessageDialog(this, "删除失败");
             }
         }).start();
     }
 
-    // ======================
-    // AI 查询
-    // ======================
-    private void aiQuery() {
-        if (currentTableName == null) {
-            JOptionPane.showMessageDialog(this, "请选表");
-            return;
-        }
-        String q = questionInput.getText().trim();
-        if (q.isBlank()) return;
-
-        new Thread(() -> {
-            List<String> fields = dataService.query("SELECT * FROM " + currentTableName + " LIMIT 1")
-                    .stream().findFirst().map(Map::keySet).orElse(Set.of()).stream().toList();
-            String sql = aiService.generateSQL(currentTableName, fields, q);
-            List<Map<String, Object>> res = dataService.query(sql);
-            lastResult = res;
-
-            SwingUtilities.invokeLater(() -> {
-                JOptionPane.showMessageDialog(this, "SQL：\n" + sql);
-                tableModel.setRowCount(0);
-                tableModel.setColumnCount(0);
-                if (!res.isEmpty()) {
-                    res.get(0).keySet().forEach(tableModel::addColumn);
-                    res.forEach(row -> tableModel.addRow(row.values().toArray()));
-                }
-            });
-        }).start();
-    }
-
-    // ======================
-    // 导出
-    // ======================
     private void exportData() {
-        if (lastResult == null || lastResult.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "无数据");
-            return;
+        if (isAiQueryResult) {
+            if (!aiFullResult.isEmpty()) {
+                ExportService.exportToExcel(aiFullResult);
+            } else {
+                JOptionPane.showMessageDialog(this, "无数据");
+            }
+        } else {
+            if (currentTableName != null) {
+                new Thread(() -> {
+                    List<Map<String, Object>> all = dataService.query("SELECT * FROM " + currentTableName);
+                    SwingUtilities.invokeLater(() -> {
+                        if (!all.isEmpty()) {
+                            ExportService.exportToExcel(all);
+                        } else {
+                            JOptionPane.showMessageDialog(this, "无数据");
+                        }
+                    });
+                }).start();
+            }
         }
-        ExportService.exportToExcel(lastResult);
     }
 }
