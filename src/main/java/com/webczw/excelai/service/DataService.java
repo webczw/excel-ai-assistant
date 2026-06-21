@@ -16,4 +16,9 @@ public class DataService {
             return List.of(Map.of("错误", e.getMessage()));
         }
     }
+
+    // 新增、修改、删除通用
+    public void update(String sql) {
+        jdbc.update(sql);
+    }
 }
